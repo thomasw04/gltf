@@ -9,6 +9,7 @@ use std::path::Path;
 
 /// Return type of `import`.
 type Import = (Document, Vec<buffer::Data>, Vec<image::Data>);
+type Fetcher = dyn Fn(&str) -> Result<Vec<u8>>;
 
 /// Represents the set of URI schemes the importer supports.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -51,13 +52,18 @@ impl<'a> Scheme<'a> {
         }
     }
 
-    fn read(base: Option<&Path>, uri: &str) -> Result<Vec<u8>> {
+    fn read(base: Option<&Path>, uri: &str, fetcher: &Box<Fetcher>) -> Result<Vec<u8>> {
         match Scheme::parse(uri) {
             // The path may be unused in the Scheme::Data case
             // Example: "uri" : "data:application/octet-stream;base64,wsVHPgA...."
             Scheme::Data(_, base64) => base64::decode(base64).map_err(Error::Base64),
-            Scheme::File(path) if base.is_some() => read_to_end(path),
-            Scheme::Relative(path) if base.is_some() => read_to_end(base.unwrap().join(&*path)),
+            Scheme::File(path) if base.is_some() => fetcher(path),
+            Scheme::Relative(path) if base.is_some() => 
+            if let Some(fetcher) = fetcher {
+                fetcher(&path)
+            } else { 
+                read_to_end(base.unwrap().join(&*path))
+            },
             Scheme::Unsupported => Err(Error::UnsupportedScheme),
             _ => Err(Error::ExternalReferenceInSliceImport),
         }
@@ -84,8 +90,8 @@ impl buffer::Data {
     /// Construct a buffer data object by reading the given source.
     /// If `base` is provided, then external filesystem references will
     /// be resolved from this directory.
-    pub fn from_source(source: buffer::Source<'_>, base: Option<&Path>) -> Result<Self> {
-        Self::from_source_and_blob(source, base, &mut None)
+    pub fn from_source(source: buffer::Source<'_>, base: Option<&Path>, fetcher: &Option<Box<Fetcher>>) -> Result<Self> {
+        Self::from_source_and_blob(source, base, &mut None, fetcher)
     }
 
     /// Construct a buffer data object by reading the given source.
@@ -97,9 +103,10 @@ impl buffer::Data {
         source: buffer::Source<'_>,
         base: Option<&Path>,
         blob: &mut Option<Vec<u8>>,
+        fetcher: &Option<Box<Fetcher>>
     ) -> Result<Self> {
         let mut data = match source {
-            buffer::Source::Uri(uri) => Scheme::read(base, uri),
+            buffer::Source::Uri(uri) => Scheme::read(base, uri, fetcher),
             buffer::Source::Bin => blob.take().ok_or(Error::MissingBlob),
         }?;
         while data.len() % 4 != 0 {
@@ -119,10 +126,11 @@ pub fn import_buffers(
     document: &Document,
     base: Option<&Path>,
     mut blob: Option<Vec<u8>>,
+    fetcher: &Option<Box<Fetcher>>
 ) -> Result<Vec<buffer::Data>> {
     let mut buffers = Vec::new();
     for buffer in document.buffers() {
-        let data = buffer::Data::from_source_and_blob(buffer.source(), base, &mut blob)?;
+        let data = buffer::Data::from_source_and_blob(buffer.source(), base, &mut blob, fetcher)?;
         if data.len() < buffer.length() {
             return Err(Error::BufferLength {
                 buffer: buffer.index(),
@@ -143,6 +151,7 @@ impl image::Data {
         source: image::Source<'_>,
         base: Option<&Path>,
         buffer_data: &[buffer::Data],
+        fetcher: &Option<Box<Fetcher>>
     ) -> Result<Self> {
         #[cfg(feature = "guess_mime_type")]
         let guess_format = |encoded_image: &[u8]| match image_crate::guess_format(encoded_image) {
@@ -169,7 +178,7 @@ impl image::Data {
                 }
                 Scheme::Unsupported => return Err(Error::UnsupportedScheme),
                 _ => {
-                    let encoded_image = Scheme::read(base, uri)?;
+                    let encoded_image = Scheme::read(base, uri, fetcher)?;
                     let encoded_format = match mime_type {
                         Some("image/png") => Png,
                         Some("image/jpeg") => Jpeg,
@@ -221,26 +230,27 @@ pub fn import_images(
     document: &Document,
     base: Option<&Path>,
     buffer_data: &[buffer::Data],
+    fetcher: &Option<Box<Fetcher>>
 ) -> Result<Vec<image::Data>> {
     let mut images = Vec::new();
     for image in document.images() {
-        images.push(image::Data::from_source(image.source(), base, buffer_data)?);
+        images.push(image::Data::from_source(image.source(), base, buffer_data, fetcher)?);
     }
     Ok(images)
 }
 
-fn import_impl(Gltf { document, blob }: Gltf, base: Option<&Path>) -> Result<Import> {
-    let buffer_data = import_buffers(&document, base, blob)?;
-    let image_data = import_images(&document, base, &buffer_data)?;
+fn import_impl(Gltf { document, blob }: Gltf, base: Option<&Path>, fetcher: &Option<Box<Fetcher>>) -> Result<Import> {
+    let buffer_data = import_buffers(&document, base, blob, fetcher)?;
+    let image_data = import_images(&document, base, &buffer_data, fetcher)?;
     let import = (document, buffer_data, image_data);
     Ok(import)
 }
 
-fn import_path(path: &Path) -> Result<Import> {
+fn import_path(path: &Path, fetcher: &Option<Box<Fetcher>>) -> Result<Import> {
     let base = path.parent().unwrap_or_else(|| Path::new("./"));
     let file = fs::File::open(path).map_err(Error::Io)?;
     let reader = io::BufReader::new(file);
-    import_impl(Gltf::from_reader(reader)?, Some(base))
+    import_impl(Gltf::from_reader(reader)?, Some(base), fetcher)
 }
 
 /// Import glTF 2.0 from the file system.
@@ -274,11 +284,11 @@ pub fn import<P>(path: P) -> Result<Import>
 where
     P: AsRef<Path>,
 {
-    import_path(path.as_ref())
+    import_path(path.as_ref(), &None)
 }
 
 fn import_slice_impl(slice: &[u8]) -> Result<Import> {
-    import_impl(Gltf::from_slice(slice)?, None)
+    import_impl(Gltf::from_slice(slice)?, None, &None)
 }
 
 /// Import glTF 2.0 from a slice.
