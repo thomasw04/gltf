@@ -32,9 +32,7 @@ fn run() -> Result<(), Box<dyn StdError>> {
                 gltf_path.set_extension("gltf");
                 {
                     print!("{:?}: ", gltf_path);
-                    let result = gltf::import(&gltf_path, |path | {
-                        todo!()
-                    })?;
+                    let result = gltf::import(&gltf_path, gltf::filesystem_fetcher)?;
 
                     sanity_check(&result.0, &result.1, &result.2);
                     println!("ok");
@@ -45,9 +43,7 @@ fn run() -> Result<(), Box<dyn StdError>> {
                 gle_path.set_extension("gltf");
                 if gle_path.exists() {
                     print!("{:?}: ", gle_path);
-                    let result = gltf::import(&gle_path, |path| {
-                        todo!()
-                    })?;
+                    let result = gltf::import(&gle_path, gltf::filesystem_fetcher)?;
                     sanity_check(&result.0, &result.1, &result.2);
                     println!("ok");
                 }
@@ -57,9 +53,7 @@ fn run() -> Result<(), Box<dyn StdError>> {
                 glb_path.set_extension("glb");
                 if glb_path.exists() {
                     print!("{:?}: ", glb_path);
-                    let result = gltf::import(&glb_path, |path| {
-                        todo!()
-                    })?;
+                    let result = gltf::import(&glb_path, gltf::filesystem_fetcher)?;
                     sanity_check(&result.0, &result.1, &result.2);
                     println!("ok");
                 }
@@ -74,17 +68,13 @@ fn run() -> Result<(), Box<dyn StdError>> {
 fn sparse_accessor_without_buffer_view_test() -> Result<(), Box<dyn StdError>> {
     let glb_path = path::Path::new("tests/box_sparse.glb");
     print!("{:?}: ", glb_path);
-    let result = gltf::import(glb_path, |path| {
-        todo!()
-    })?;
+    let result = gltf::import(glb_path, gltf::filesystem_fetcher)?;
     sanity_check(&result.0, &result.1, &result.2);
     println!("ok");
 
     let gltf_path = path::Path::new("tests/box_sparse.gltf");
     print!("{:?}: ", gltf_path);
-    let result = gltf::import(gltf_path, |path| {
-        todo!()
-    })?;
+    let result = gltf::import(gltf_path, gltf::filesystem_fetcher)?;
     sanity_check(&result.0, &result.1, &result.2);
     println!("ok");
     Ok(())

@@ -4,7 +4,6 @@ use crate::{accessor, scene, Document};
 use crate::Buffer;
 
 pub use json::animation::{Interpolation, Property};
-use serde_json::{Map, Value};
 
 /// Iterators.
 pub mod iter;

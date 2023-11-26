@@ -51,18 +51,35 @@ impl<'a> Scheme<'a> {
         }
     }
 
-    fn read<F>(uri: &str, mut fetcher: F) -> Result<Vec<u8>> 
-        where F: FnMut(&str) -> Result<Vec<u8>>
+    fn read<F>(base: Option<&Path>, uri: &str, mut fetcher: F) -> Result<Vec<u8>> 
+        where F: FnMut(Option<&Path>, &str) -> Result<Vec<u8>>
     {
         match Scheme::parse(uri) {
             // The path may be unused in the Scheme::Data case
             // Example: "uri" : "data:application/octet-stream;base64,wsVHPgA...."
             Scheme::Data(_, base64) => base64::decode(base64).map_err(Error::Base64),
-            Scheme::File(path) => fetcher(path),
-            Scheme::Relative(path) => fetcher(&path),
+            Scheme::File(path) => fetcher(None, path),
+            Scheme::Relative(path) if base.is_some() => fetcher(base, &path),
             Scheme::Unsupported => Err(Error::UnsupportedScheme),
+            _ => Err(Error::ExternalReferenceInSliceImport),
         }
     }
+}
+
+/// Fetcher function for filesystem references.
+/// This can be used as the `fetcher` argument to the `import` functions.
+pub fn filesystem_fetcher(base: Option<&Path>, path: &str) -> Result<Vec<u8>> {
+    let path = match base {
+        Some(base) => base.join(path),
+        None => Path::new(path).to_path_buf(),
+    };
+    read_to_end(path)
+}
+
+/// Fetcher function that should never be called.
+/// Intended for use in slice import without external references.
+pub fn empty_fetcher(_base: Option<&Path>, _path: &str) -> Result<Vec<u8>> {
+    Err(Error::ExternalReferenceInSliceImport)
 }
 
 fn read_to_end<P>(path: P) -> Result<Vec<u8>>
@@ -85,10 +102,10 @@ impl buffer::Data {
     /// Construct a buffer data object by reading the given source.
     /// If `base` is provided, then external filesystem references will
     /// be resolved from this directory.
-    pub fn from_source<F>(source: buffer::Source<'_>, fetcher: F) -> Result<Self>
-    where F: FnMut(&str) -> Result<Vec<u8>>
+    pub fn from_source<F>(source: buffer::Source<'_>, base: Option<&Path>, fetcher: F) -> Result<Self>
+    where F: FnMut(Option<&Path>, &str) -> Result<Vec<u8>>
     {
-        Self::from_source_and_blob(source, &mut None, fetcher)
+        Self::from_source_and_blob(source, &mut None, base, fetcher)
     }
 
     /// Construct a buffer data object by reading the given source.
@@ -99,12 +116,13 @@ impl buffer::Data {
     pub fn from_source_and_blob<F>(
         source: buffer::Source<'_>,
         blob: &mut Option<Vec<u8>>,
+        base: Option<&Path>,
         fetcher: F
     ) -> Result<Self>
-        where F: FnMut(&str) -> Result<Vec<u8>>
+        where F: FnMut(Option<&Path>, &str) -> Result<Vec<u8>>
     {
         let mut data = match source {
-            buffer::Source::Uri(uri) => Scheme::read(uri, fetcher),
+            buffer::Source::Uri(uri) => Scheme::read(base, uri, fetcher),
             buffer::Source::Bin => blob.take().ok_or(Error::MissingBlob),
         }?;
         while data.len() % 4 != 0 {
@@ -123,13 +141,14 @@ impl buffer::Data {
 pub fn import_buffers<F>(
     document: &Document,
     mut blob: Option<Vec<u8>>,
+    base: Option<&Path>,
     mut fetcher: F
 ) -> Result<Vec<buffer::Data>>
-    where F: FnMut(&str) -> Result<Vec<u8>>
+    where F: FnMut(Option<&Path>, &str) -> Result<Vec<u8>>
 {
     let mut buffers = Vec::new();
     for buffer in document.buffers() {
-        let data = buffer::Data::from_source_and_blob(buffer.source(), &mut blob, &mut fetcher)?;
+        let data = buffer::Data::from_source_and_blob(buffer.source(), &mut blob, base, &mut fetcher)?;
         if data.len() < buffer.length() {
             return Err(Error::BufferLength {
                 buffer: buffer.index(),
@@ -149,9 +168,10 @@ impl image::Data {
     pub fn from_source<F>(
         source: image::Source<'_>,
         buffer_data: &[buffer::Data],
+        base: Option<&Path>,
         fetcher: F
     ) -> Result<Self> 
-        where F: FnMut(&str) -> Result<Vec<u8>>
+        where F: FnMut(Option<&Path>, &str) -> Result<Vec<u8>>
     {
         #[cfg(feature = "guess_mime_type")]
         let guess_format = |encoded_image: &[u8]| match image_crate::guess_format(encoded_image) {
@@ -178,7 +198,7 @@ impl image::Data {
                 }
                 Scheme::Unsupported => return Err(Error::UnsupportedScheme),
                 _ => {
-                    let encoded_image = Scheme::read(uri, fetcher)?;
+                    let encoded_image = Scheme::read(base, uri, fetcher)?;
                     let encoded_format = match mime_type {
                         Some("image/png") => Png,
                         Some("image/jpeg") => Jpeg,
@@ -228,33 +248,34 @@ impl image::Data {
 pub fn import_images<F>(
     document: &Document,
     buffer_data: &[buffer::Data],
+    base: Option<&Path>,
     mut fetcher: F
 ) -> Result<Vec<image::Data>>
-    where F: FnMut(&str) -> Result<Vec<u8>>
+    where F: FnMut(Option<&Path>, &str) -> Result<Vec<u8>>
 {
     let mut images = Vec::new();
     for image in document.images() {
-        images.push(image::Data::from_source(image.source(), buffer_data, &mut fetcher)?);
+        images.push(image::Data::from_source(image.source(), buffer_data, base, &mut fetcher)?);
     }
     Ok(images)
 }
 
-fn import_impl<F>(Gltf { document, blob }: Gltf, mut fetcher: F) -> Result<Import>
-    where F: FnMut(&str) -> Result<Vec<u8>>
+fn import_impl<F>(Gltf { document, blob }: Gltf, base: Option<&Path>, mut fetcher: F) -> Result<Import>
+    where F: FnMut(Option<&Path>, &str) -> Result<Vec<u8>>
 {
-    let buffer_data = import_buffers(&document, blob, &mut fetcher)?;
-    let image_data = import_images(&document, &buffer_data, fetcher)?;
+    let buffer_data = import_buffers(&document, blob, base, &mut fetcher)?;
+    let image_data = import_images(&document, &buffer_data, base, fetcher)?;
     let import = (document, buffer_data, image_data);
     Ok(import)
 }
 
 fn import_path<F>(path: &Path, fetcher: F) -> Result<Import>
-    where F: FnMut(&str) -> Result<Vec<u8>>
+    where F: FnMut(Option<&Path>, &str) -> Result<Vec<u8>>
 {
     let base = path.parent().unwrap_or_else(|| Path::new("./"));
     let file = fs::File::open(path).map_err(Error::Io)?;
     let reader = io::BufReader::new(file);
-    import_impl(Gltf::from_reader(reader)?, fetcher)
+    import_impl(Gltf::from_reader(reader)?, Some(base), fetcher)
 }
 
 /// Import glTF 2.0 from the file system.
@@ -263,7 +284,7 @@ fn import_path<F>(path: &Path, fetcher: F) -> Result<Import>
 /// # fn run() -> Result<(), gltf::Error> {
 /// # let path = "examples/Box.gltf";
 /// # #[allow(unused)]
-/// let (document, buffers, images) = gltf::import(path)?;
+/// let (document, buffers, images) = gltf::import(path, gltf::filesystem_fetcher)?;
 /// # Ok(())
 /// # }
 /// # fn main() {
@@ -287,21 +308,20 @@ fn import_path<F>(path: &Path, fetcher: F) -> Result<Import>
 pub fn import<P, F>(path: P, fetcher: F) -> Result<Import>
 where
     P: AsRef<Path>,
-    F: FnMut(&str) -> Result<Vec<u8>>
+    F: FnMut(Option<&Path>, &str) -> Result<Vec<u8>>
 {
     import_path(path.as_ref(), fetcher)
 }
 
-fn import_slice_impl<F>(slice: &[u8], fetcher: F) -> Result<Import>
-    where F: FnMut(&str) -> Result<Vec<u8>>
+fn import_slice_impl<F>(slice: &[u8], base: Option<&Path>, fetcher: F) -> Result<Import>
+    where F: FnMut(Option<&Path>, &str) -> Result<Vec<u8>>
 {
-    import_impl(Gltf::from_slice(slice)?, fetcher)
+    import_impl(Gltf::from_slice(slice)?, base, fetcher)
 }
 
 /// Import glTF 2.0 from a slice.
 ///
-/// File paths in the document are assumed to be relative to the current working
-/// directory.
+/// File paths in the document are assumed to be relative to the base path.
 ///
 /// ### Note
 ///
@@ -318,17 +338,17 @@ fn import_slice_impl<F>(slice: &[u8], fetcher: F) -> Result<Import>
 /// # let mut bytes = Vec::new();
 /// # file.read_to_end(&mut bytes).map_err(gltf::Error::Io)?;
 /// # #[allow(unused)]
-/// let (document, buffers, images) = gltf::import_slice(bytes.as_slice())?;
+/// let (document, buffers, images) = gltf::import_slice(bytes.as_slice(), None, gltf::empty_fetcher)?;
 /// # Ok(())
 /// # }
 /// # fn main() {
 /// #     run().expect("test failure");
 /// # }
 /// ```
-pub fn import_slice<S, F>(slice: S, fetcher: F) -> Result<Import>
+pub fn import_slice<S, F>(slice: S, base: Option<&Path>, fetcher: F) -> Result<Import>
 where
     S: AsRef<[u8]>,
-    F: FnMut(&str) -> Result<Vec<u8>>
+    F: FnMut(Option<&Path>, &str) -> Result<Vec<u8>>
 {
-    import_slice_impl(slice.as_ref(), fetcher)
+    import_slice_impl(slice.as_ref(), base, fetcher)
 }

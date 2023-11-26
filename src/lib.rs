@@ -50,7 +50,7 @@
 //!
 //! ```
 //! # fn run() -> Result<(), Box<dyn std::error::Error>> {
-//! let (document, buffers, images) = gltf::import("examples/Box.gltf")?;
+//! let (document, buffers, images) = gltf::import("examples/Box.gltf", gltf::filesystem_fetcher)?;
 //! assert_eq!(buffers.len(), document.buffers().count());
 //! assert_eq!(images.len(), document.images().count());
 //! # Ok(())
@@ -173,6 +173,12 @@ pub use self::import::import_images;
 #[cfg(feature = "import")]
 #[doc(inline)]
 pub use self::import::import_slice;
+#[cfg(feature = "import")]
+#[doc(inline)]
+pub use self::import::filesystem_fetcher;
+#[cfg(feature = "import")]
+#[doc(inline)]
+pub use self::import::empty_fetcher;
 #[doc(inline)]
 pub use self::material::Material;
 #[doc(inline)]

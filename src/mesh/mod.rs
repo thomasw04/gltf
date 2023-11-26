@@ -28,7 +28,7 @@
 //!
 //! ```
 //! # fn run() -> Result<(), Box<dyn std::error::Error>> {
-//! let (gltf, buffers, _) = gltf::import("examples/Box.gltf")?;
+//! let (gltf, buffers, _) = gltf::import("examples/Box.gltf", gltf::filesystem_fetcher)?;
 //! for mesh in gltf.meshes() {
 //!    println!("Mesh #{}", mesh.index());
 //!    for primitive in mesh.primitives() {
